@@ -1,6 +1,6 @@
 defineJob({
   name: "inboxZeroAgent",
-  description: "Fetch unread Gmail, triage as URGENT/FOLLOW_UP/FYI, and auto-label URGENT emails.",
+  description: "Fetch unread Gmail, use AI to triage as URGENT/FOLLOW_UP/FYI, summarize each email, and auto-label URGENT emails in Gmail.",
   input: {
     max_results: "number?",
   },
@@ -16,34 +16,48 @@ defineJob({
       return { total: 0, urgent: 0, follow_up: 0, fyi: 0, labeled: 0 };
     }
 
-    function classify(subject: string, body: string, sender: string) {
-      const text = (subject + " " + body + " " + sender).toLowerCase();
-      const urgentKeywords = [
-        "deadline", "urgent", "asap", "immediately", "due today",
-        "due tomorrow", "interview", "offer letter", "result", "exam",
-        "payment", "invoice", "overdue", "action required", "verify",
-        "alert", "security", "suspended", "account", "expire", "inactive"
-      ];
-      const fiyKeywords = [
-        "unsubscribe", "newsletter", "promo", "offer", "discount",
-        "sale", "marketing", "notification", "noreply", "no-reply",
-        "donotreply", "receipt", "order confirmed", "shipment"
-      ];
-      for (const k of urgentKeywords) if (text.includes(k)) return "URGENT";
-      for (const k of fiyKeywords) if (text.includes(k)) return "FYI";
-      return "FOLLOW_UP";
-    }
-
     const emails = [];
     let labeled = 0;
 
     for (const email of messages) {
-      const subject  = email.preview?.subject ?? email.subject ?? "(no subject)";
-      const sender   = email.sender ?? "unknown";
-      const body     = email.preview?.body ?? "";
-      const priority = classify(subject, body, sender);
+      const subject = email.preview?.subject ?? email.subject ?? "(no subject)";
+      const sender  = email.sender ?? "unknown";
+      const body    = email.preview?.body ?? "";
 
-      // Auto-label URGENT emails in Gmail
+      const aiResponse = await hrbr.ai.generate({
+        prompt: `You are an inbox assistant. Analyze this email and reply ONLY as raw JSON with no markdown, no backticks, no extra text whatsoever:
+{"priority":"URGENT"|"FOLLOW_UP"|"FYI","summary":"one sentence max 20 words","needsReply":true|false}
+
+Rules:
+- URGENT: deadlines, interviews, payments, security alerts, account issues, exam results, offer letters
+- FOLLOW_UP: needs a reply but not urgent
+- FYI: newsletters, receipts, promos, notifications, noreply senders
+
+From: ${sender}
+Subject: ${subject}
+Body: ${body.slice(0, 300)}`,
+        max_tokens: 80,
+      });
+
+      let priority = "FYI";
+      let summary = body.slice(0, 80);
+      let needsReply = false;
+
+      try {
+        const clean = aiResponse.text
+          .trim()
+          .replace(/```json/g, "")
+          .replace(/```/g, "")
+          .trim();
+        const parsed = JSON.parse(clean);
+        priority   = parsed.priority   ?? "FYI";
+        summary    = parsed.summary    ?? summary;
+        needsReply = parsed.needsReply ?? false;
+      } catch {
+        if (aiResponse.text.includes("URGENT"))       priority = "URGENT";
+        else if (aiResponse.text.includes("FOLLOW_UP")) priority = "FOLLOW_UP";
+      }
+
       if (priority === "URGENT" && email.messageId) {
         await gmail.gmailAddLabelToEmail({
           message_id: email.messageId,
@@ -52,7 +66,7 @@ defineJob({
         labeled++;
       }
 
-      emails.push({ subject, from: sender, priority, link: email.display_url ?? "" });
+      emails.push({ subject, from: sender, priority, summary, needsReply, link: email.display_url ?? "" });
     }
 
     emails.sort((a, b) => {
@@ -66,7 +80,6 @@ defineJob({
       follow_up: emails.filter(e => e.priority === "FOLLOW_UP").length,
       fyi: emails.filter(e => e.priority === "FYI").length,
       labeled,
-      emails,
     };
   },
 });
