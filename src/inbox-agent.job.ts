@@ -1,6 +1,6 @@
 defineJob({
   name: "inboxZeroAgent",
-  description: "Fetch unread Gmail and triage each email as URGENT, FOLLOW_UP, or FYI.",
+  description: "Fetch unread Gmail, triage as URGENT/FOLLOW_UP/FYI, and auto-label URGENT emails.",
   input: {
     max_results: "number?",
   },
@@ -13,7 +13,7 @@ defineJob({
     const messages = unread?.data?.messages ?? [];
 
     if (!messages.length) {
-      return { total: 0, urgent: 0, follow_up: 0, fyi: 0, emails: [] };
+      return { total: 0, urgent: 0, follow_up: 0, fyi: 0, labeled: 0 };
     }
 
     function classify(subject: string, body: string, sender: string) {
@@ -35,11 +35,23 @@ defineJob({
     }
 
     const emails = [];
+    let labeled = 0;
+
     for (const email of messages) {
       const subject  = email.preview?.subject ?? email.subject ?? "(no subject)";
       const sender   = email.sender ?? "unknown";
       const body     = email.preview?.body ?? "";
       const priority = classify(subject, body, sender);
+
+      // Auto-label URGENT emails in Gmail
+      if (priority === "URGENT" && email.messageId) {
+        await gmail.gmailAddLabelToEmail({
+          message_id: email.messageId,
+          add_label_ids: ["Label_1"],
+        });
+        labeled++;
+      }
+
       emails.push({ subject, from: sender, priority, link: email.display_url ?? "" });
     }
 
@@ -53,6 +65,7 @@ defineJob({
       urgent: emails.filter(e => e.priority === "URGENT").length,
       follow_up: emails.filter(e => e.priority === "FOLLOW_UP").length,
       fyi: emails.filter(e => e.priority === "FYI").length,
+      labeled,
       emails,
     };
   },
