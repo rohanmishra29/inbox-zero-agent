@@ -9,32 +9,48 @@ if (!messages.length) {
   return { message: "Inbox is clean!" };
 }
 
-function classify(subject: string, body: string, sender: string) {
-  const text = (subject + " " + body + " " + sender).toLowerCase();
-  const urgentKeywords = [
-    "deadline", "urgent", "asap", "immediately", "due today",
-    "due tomorrow", "interview", "offer letter", "result", "exam",
-    "payment", "invoice", "overdue", "action required", "verify",
-    "alert", "security", "suspended", "account", "expire", "inactive"
-  ];
-  const fiyKeywords = [
-    "unsubscribe", "newsletter", "promo", "offer", "discount",
-    "sale", "marketing", "notification", "noreply", "no-reply",
-    "donotreply", "receipt", "order confirmed", "shipment"
-  ];
-  for (const k of urgentKeywords) if (text.includes(k)) return "URGENT";
-  for (const k of fiyKeywords) if (text.includes(k)) return "FYI";
-  return "FOLLOW_UP";
-}
-
 const results = [];
 let labeled = 0;
 
 for (const email of messages) {
-  const subject  = email.preview?.subject ?? email.subject ?? "(no subject)";
-  const sender   = email.sender ?? "unknown";
-  const body     = email.preview?.body ?? "";
-  const priority = classify(subject, body, sender);
+  const subject = email.preview?.subject ?? email.subject ?? "(no subject)";
+  const sender  = email.sender ?? "unknown";
+  const body    = email.preview?.body ?? "";
+
+  const aiResponse = await hrbr.ai.generate({
+    prompt: `You are an inbox assistant. Analyze this email and reply ONLY as raw JSON with no markdown, no backticks, no extra text whatsoever:
+{"priority":"URGENT"|"FOLLOW_UP"|"FYI","summary":"one sentence max 20 words","needsReply":true|false}
+
+Rules:
+- URGENT: deadlines, interviews, payments, security alerts, account issues, exam results, offer letters
+- FOLLOW_UP: needs a reply but not urgent
+- FYI: newsletters, receipts, promos, notifications, noreply senders
+
+From: ${sender}
+Subject: ${subject}
+Body: ${body.slice(0, 300)}`,
+    max_tokens: 80,
+  });
+
+  let priority = "FYI";
+  let summary = body.slice(0, 80);
+  let needsReply = false;
+
+  try {
+    const clean = aiResponse.text
+      .trim()
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
+    const parsed = JSON.parse(clean);
+    priority   = parsed.priority   ?? "FYI";
+    summary    = parsed.summary    ?? summary;
+    needsReply = parsed.needsReply ?? false;
+  } catch (e) {
+    // fallback: try to extract priority from raw text
+    if (aiResponse.text.includes("URGENT"))      priority = "URGENT";
+    else if (aiResponse.text.includes("FOLLOW_UP")) priority = "FOLLOW_UP";
+  }
 
   if (priority === "URGENT" && email.messageId) {
     await gmail.gmailAddLabelToEmail({
@@ -44,7 +60,7 @@ for (const email of messages) {
     labeled++;
   }
 
-  results.push({ subject, from: sender, priority, snippet: body.slice(0, 100) });
+  results.push({ subject, from: sender, priority, summary, needsReply, link: email.display_url ?? "" });
 }
 
 results.sort((a, b) => {
@@ -53,3 +69,5 @@ results.sort((a, b) => {
 });
 
 return { total: results.length, labeled, emails: results };
+
+
