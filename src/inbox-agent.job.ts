@@ -1,6 +1,7 @@
 defineJob({
   name: "inboxZeroAgent",
   description: "Fetch unread Gmail, use AI to triage as URGENT/FOLLOW_UP/FYI, summarize each email, and auto-label URGENT emails in Gmail.",
+  triggers: ["schedule"],
   input: {
     max_results: "number?",
   },
@@ -54,7 +55,7 @@ Body: ${body.slice(0, 300)}`,
         summary    = parsed.summary    ?? summary;
         needsReply = parsed.needsReply ?? false;
       } catch {
-        if (aiResponse.text.includes("URGENT"))       priority = "URGENT";
+        if (aiResponse.text.includes("URGENT"))        priority = "URGENT";
         else if (aiResponse.text.includes("FOLLOW_UP")) priority = "FOLLOW_UP";
       }
 
